@@ -1,0 +1,10 @@
+1.透明代理模块基本默认启用秋风广告规则：
+https://raw.githubusercontent.com/TG-Twilight/AWAvenue-Ads-Rule/main/Filters/AWAvenue-Ads-Rule-Clash-classical.yaml
+
+2.不够用启用adhosts.yaml
+广告域名规则来自10007大佬的hosts
+
+3.其它广告规则：
+冷莫的规则：http://hosts.trli.club/
+可进去自行下载
+因为冷莫规则太多，几百万左右，不建议使用，启用秋风和adhosts.yaml基本可过99%，如果你有规则，可自行添加进去。

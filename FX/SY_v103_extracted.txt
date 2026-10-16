@@ -1,0 +1,1245 @@
+===== module.prop =====
+id=SY
+name=SY �� AdGuard Home �ںϹ������
+version=v1.0.3
+versionCode=10300
+updateJson=https://raw.githubusercontent.com/vip-svip/SY-Fusion/main/update.json
+author=vip-svip
+description=AdGuard Home �� uBlock Origin �ں����棻��������(DNS/hosts+MITM+����) + Shadowrocket ������·�� + �����˽��й¶(DNS/IPv6/��ʵIP/VPN����/�ڵ� ���ھ��ں˼�����, ���߳��ڹ����˶�) + ���Ϳ���̨��� + ���ù����� App(���ϰ�/LSPosed ����)���������û����а�װ����ģ�鲻�Դ����˹���ж�����������ռ VPN ͨ����
+
+===== update.json =====
+{
+  "version": "v1.0.3",
+  "versionCode": 10300,
+  "zipUrl": "https://github.com/vip-svip/SY-Fusion/releases/download/v1.0.3/SY_v1.0.3.zip",
+  "changelog": "https://raw.githubusercontent.com/vip-svip/SY-Fusion/main/changelog.md"
+}
+
+===== action.sh =====
+#!/system/bin/sh
+# ============================================================
+#  action.sh �� KernelSU ��塸��������ť�ű�
+#  ���ģ�鿨Ƭ�Ĳ�����ťʱִ�У�����/���� Web ��岢��ʾ��ַ
+# ============================================================
+MODDIR=${0%/*}
+DATA_DIR=/data/adb/SY
+[ -d "$DATA_DIR" ] || DATA_DIR=/data/SY
+
+echo "��������������ع������..."
+sh "$MODDIR/scripts/panel.sh" start
+sleep 1
+ST=$(sh "$MODDIR/scripts/panel.sh" status)
+PORT=$(echo "$ST" | grep -oE '"port":[0-9]+' | cut -d: -f2)
+IP=$(echo "$ST" | grep -oE '"lan_ip":"[^"]*"' | cut -d'"' -f4)
+echo ""
+echo "==================================="
+echo " ������ء��ں���ǿ��  ����Ѿ���"
+echo " ����: http://127.0.0.1:$PORT"
+[ -n "$IP" ] && echo " ������: http://$IP:$PORT"
+echo " ����: $(sh "$MODDIR/scripts/panel.sh" token 2>/dev/null | head -c 8)****"
+echo "==================================="
+
+===== service.sh =====
+#!/system/bin/sh
+# ============================================================
+#  ������ء��ں���ǿ�� �� late_start service
+#  ϵͳ������ɺ�ִ��: Ӧ�ù��������ػ����̡��������
+# ============================================================
+MODDIR=${0%/*}
+DATA_DIR=/data/adb/SY
+[ -d "$DATA_DIR" ] || DATA_DIR=/data/SY
+LOG="$DATA_DIR/logs/service.log"
+mkdir -p "$DATA_DIR/logs" 2>/dev/null
+
+# �ȴ�ϵͳ�������
+i=0
+while [ "$(getprop sys.boot_completed)" != "1" ] && [ $i -lt 60 ]; do
+  sleep 2; i=$((i+1))
+done
+sleep 8
+
+exec >>"$LOG" 2>&1
+echo "=== service start $(date) ==="
+
+if [ -f "$DATA_DIR/config/sy.conf" ]; then
+  . "$DATA_DIR/config/sy.conf"
+fi
+
+# DNS: Ӧ�� hosts ���ع��� (������/�Զ���/���ÿ�)
+sh "$MODDIR/scripts/dns.sh" apply
+
+# ��������: Ӧ������/IP/����/�˿ڹ��� (������)
+if [ -f "$MODDIR/scripts/netblock.sh" ]; then
+  sh "$MODDIR/scripts/netblock.sh" apply
+fi
+
+# ��˽��й¶: �����ָ��������ϴ�Ϊ����״̬��DNS/IPv6/IP/VPN/�ڵ㣩
+if [ -f "$MODDIR/scripts/leakguard.sh" ]; then
+  sh "$MODDIR/scripts/leakguard.sh" restore
+fi
+
+# DNS �ӹ� (���� DNS ҳ����ʱ)
+if [ "${DNSSRV_ENABLE:-0}" = "1" ] && [ -f "$MODDIR/scripts/dnssrv.sh" ]; then
+  sh "$MODDIR/scripts/dnssrv.sh" apply
+fi
+
+# �������: ����������й¶�������Զ��ָ�
+if [ -f "$DATA_DIR/rules/proxy/.leak" ] && [ -f "$MODDIR/scripts/proxynode.sh" ]; then
+  sh "$MODDIR/scripts/proxynode.sh" leak on
+fi
+# �������: ���ܿ��ؿ�������ѡ�нڵ㣬�����Զ������ں�
+if [ "${PROXY_ENABLE:-0}" = "1" ] && [ -f "$MODDIR/scripts/proxynode.sh" ]; then
+  sh "$MODDIR/scripts/proxynode.sh" up
+fi
+
+# MITM: ����������͸���������ض���
+if [ "${MITM_ENABLE:-0}" = "1" ]; then
+  sh "$MODDIR/scripts/mitm.sh" up
+fi
+
+# ���������ػ�
+if [ "${SPLASH_ENABLE:-1}" = "1" ]; then
+  nohup sh "$MODDIR/scripts/splash.sh" daemon >/dev/null 2>&1 &
+  echo "splash daemon started pid=$!"
+fi
+
+# ��� Web ���� (���� + ������)
+if [ "${PANEL_ENABLE:-1}" = "1" ]; then
+  sh "$MODDIR/scripts/panel.sh" ensure
+  # ����: 25s ����ȷ��һ�Σ���ֹ������������δ�������� serve δ��
+  ( sleep 25; sh "$MODDIR/scripts/panel.sh" ensure >>"$LOG" 2>&1 ) &
+fi
+
+echo "=== service init done ==="
+
+# ---- ������̨ͬ�����ù���� (����ʱ, ����������) ----
+if [ -f "$MODDIR/scripts/ruleset.sh" ]; then
+  ( sh "$MODDIR/scripts/ruleset.sh" sync >>"$DATA_DIR/logs/ruleset.log" 2>&1 & )
+fi
+
+===== post-fs-data.sh =====
+#!/system/bin/sh
+# ============================================================
+#  ������ء��ں���ǿ�� �� post-fs-data �׶� (���磬���� App ����)
+#  ����: �������� hosts���󶨹��� hosts��׼��֤��Ŀ¼
+# ============================================================
+MODDIR=${0%/*}
+DATA_DIR=/data/adb/SY
+[ -d "$DATA_DIR" ] || DATA_DIR=/data/SY
+MODDIR_REAL=/data/adb/modules/SY
+LOG="$DATA_DIR/logs/post-fs.log"
+mkdir -p "$DATA_DIR/logs" 2>/dev/null
+exec >>"$LOG" 2>&1
+echo "=== post-fs-data $(date) ==="
+
+DNS_DIR="$DATA_DIR/rules/dns"
+HOSTS_SRC="$DNS_DIR/hosts"
+mkdir -p "$DNS_DIR" 2>/dev/null
+
+# ---------- 1. ������ hosts ������: �ù���⻺������(�������ù���) ----------
+if [ ! -s "$HOSTS_SRC" ]; then
+  echo "hosts �����ڣ������ù���⻺������"
+  BLK="$DATA_DIR/rules/remote/block.txt"
+  AD="$DATA_DIR/rules/dns/all_domains.txt"
+  {
+    echo "# ������� �� �����Զ����� $(date)"
+    echo "127.0.0.1 localhost"
+    echo "::1 localhost"
+    if [ -s "$AD" ]; then
+      awk '{print "0.0.0.0 "$0; print "0.0.0.0 www."$0}' "$AD" 2>/dev/null
+    elif [ -f "$BLK" ]; then
+      sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$BLK" 2>/dev/null | \
+      grep -v '^||.*/' | \
+      sed -e 's/^||//' -e 's/[\^*|].*$//' | \
+      grep -E '^[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$' | sort -u | \
+      while IFS= read -r d; do
+        echo "0.0.0.0 $d"
+        echo "0.0.0.0 www.$d"
+      done
+    fi
+  } > "$HOSTS_SRC.tmp" 2>/dev/null
+  mv -f "$HOSTS_SRC.tmp" "$HOSTS_SRC" 2>/dev/null
+  chmod 0644 "$HOSTS_SRC" 2>/dev/null
+  echo "hosts ����: $(wc -l < "$HOSTS_SRC" 2>/dev/null) �� (����⻺��)"
+fi
+
+# ---------- 2. �󶨹��� hosts (DNS�����غ���) ----------
+if [ -s "$HOSTS_SRC" ]; then
+  TARGET=/system/etc/hosts
+  [ -f "$TARGET" ] || TARGET=/etc/hosts
+  # ��ж�ؿ��ܴ��ڵľɹ��ر��� EBUSY
+  umount "$TARGET" 2>/dev/null
+  if mount --bind "$HOSTS_SRC" "$TARGET" 2>/dev/null; then
+    chmod 0644 "$TARGET" 2>/dev/null
+    echo "hosts bind-mount ok -> $TARGET"
+  else
+    echo "hosts bind-mount FAILED -> $TARGET"
+  fi
+fi
+
+# ---------- 3. ֤��Ŀ¼Ȩ�� ----------
+CACERTS="$MODDIR_REAL/system/etc/security/cacerts"
+if [ -d "$CACERTS" ]; then
+  chmod 0755 "$CACERTS" 2>/dev/null
+  chmod 0644 "$CACERTS"/* 2>/dev/null
+  chown 0:0 "$CACERTS"/* 2>/dev/null
+  echo "cacerts overlay ready"
+fi
+
+echo "=== post-fs-data done ==="
+
+===== uninstall.sh =====
+#!/system/bin/sh
+# ============================================================
+#  ������ء��ں���ǿ�� �� ж�ؽű�
+#  ������������ʱ��Դ + ֤����ģ��(SY_cert) + ��֤�����
+# ============================================================
+MODDIR=${0%/*}
+DATA_DIR=/data/adb/SY
+MODROOT=/data/adb/modules
+CERT_MOD="SY_cert"
+
+# ֹͣ������
+[ -f "$DATA_DIR/run/panel.pid" ] && kill "$(cat "$DATA_DIR/run/panel.pid")" 2>/dev/null
+# ֹͣ MITM ����
+[ -f "$DATA_DIR/run/proxy.pid" ] && kill "$(cat "$DATA_DIR/run/proxy.pid")" 2>/dev/null
+# ֹͣ�����ػ�
+[ -f "$DATA_DIR/run/splash.pid" ] && kill "$(cat "$DATA_DIR/run/splash.pid")" 2>/dev/null
+# ֹͣ�����ں�
+[ -f "$DATA_DIR/rules/proxy/core.pid" ] && kill "$(cat "$DATA_DIR/rules/proxy/core.pid")" 2>/dev/null
+
+# ж�����ù����� App
+if [ -f "$MODDIR/scripts/installapp.sh" ]; then
+  sh "$MODDIR/scripts/installapp.sh" remove >/dev/null 2>&1
+else
+  pm uninstall --user 0 com.syfusion.manager >/dev/null 2>&1
+fi
+rm -f /data/local/tmp/SYManager.apk 2>/dev/null
+
+# ���� iptables �ض������й¶
+sh "$MODDIR/scripts/mitm.sh" down >/dev/null 2>&1
+[ -f "$MODDIR/scripts/proxynode.sh" ] && sh "$MODDIR/scripts/proxynode.sh" leak off >/dev/null 2>&1
+
+# ��� hosts �󶨹���
+umount /system/etc/hosts 2>/dev/null
+
+# ---------- ��֤�� / ֤����ģ�� �������� ----------
+# 1) �Ƴ��Ѱ�װ�ĸ�֤��(overlay ��ϵͳ CA Ŀ¼)
+for c in /data/adb/modules/*/system/etc/security/cacerts/*.0 ; do
+  [ -f "$c" ] && case "$c" in *sy*|*adblock*) rm -f "$c" ;; esac
+done
+rm -rf /data/adb/SY_cert 2>/dev/null
+# ֤����ģ�����(�� modules / modules_update)
+rm -rf "${MODROOT:?}/${CERT_MOD:?}" 2>/dev/null
+rm -rf /data/adb/modules_update/$CERT_MOD 2>/dev/null
+# ��ģ���Դ��� overlay CA Ŀ¼
+rm -rf "$MODROOT/$CERT_MOD/system" 2>/dev/null
+# 2) ����֤�������м����
+rm -rf "$DATA_DIR/ca" 2>/dev/null
+rm -f "$DATA_DIR/config/.ca_installed" "$DATA_DIR/config/.ca_hash" 2>/dev/null
+# 3) �Ƴ���ǩ��֤����ϵͳ�ڵĹ��ص�(������)
+umount /system/etc/security/cacerts 2>/dev/null
+
+# �Ƴ��־û�����Ŀ¼
+rm -rf "$DATA_DIR/run" 2>/dev/null
+echo "uninstalled: SY (��֤����ģ�� $CERT_MOD ����������)"
+
+===== customize.sh =====
+#!/system/bin/sh
+# ============================================================
+#  ������ء��ں���ǿ��  ��  ģ�鰲װ�ű� (customize.sh)
+#  KernelSU / Magisk ͨ�ð�װ����
+#  ע��: customize.sh �ᱻ��װ�� source��$0 ָ��װ����
+#        ģ��Ŀ¼�����ñ�׼���� $MODPATH��
+# ============================================================
+SKIPUNZIP=0
+
+if [ -n "$MODPATH" ]; then
+  MODDIR="$MODPATH"
+else
+  MODDIR="${0%/*}"
+fi
+DATA_DIR=/data/adb/SY
+CERT_MOD=/data/adb/modules/SY_cert
+
+[ -n "$API" ] || API=$(getprop ro.build.version.sdk 2>/dev/null)
+[ -n "$API" ] || API=30
+
+ui_print "- ģ��Ŀ¼: $MODDIR  (Android API $API)"
+
+# ---------- ABI ��� (���ػ���) ----------
+ABI=$(getprop ro.product.cpu.abi 2>/dev/null)
+[ -z "$ABI" ] && ABI=$(getprop ro.product.cpu.abilist 2>/dev/null | cut -d, -f1)
+MACHINE=$(uname -m 2>/dev/null)
+ui_print "- �豸�ܹ�: ABI=$ABI / machine=$MACHINE"
+
+case "$ABI $MACHINE" in
+  *arm64*|*aarch64*)            ARCH=arm64 ;;
+  *armeabi*|*armv7*|*arm*)      ARCH=arm ;;
+  *x86_64*|*amd64*|*x64*)       ARCH=amd64 ;;
+  *i386*|*i686*|*x86*)          ARCH=amd64 ;;
+  *)                            ARCH=arm64 ;;
+esac
+ui_print "- ѡ�üܹ�: $ARCH"
+
+BIN_SRC="$MODDIR/bin/abserver-$ARCH"
+[ -f "$BIN_SRC" ] || BIN_SRC="$MODDIR/bin/abserver-arm64"
+[ -f "$BIN_SRC" ] || BIN_SRC="$MODDIR/bin/abserver-amd64"
+
+if [ -f "$BIN_SRC" ]; then
+  cp -f "$BIN_SRC" "$MODDIR/bin/abserver"
+  chmod 0755 "$MODDIR/bin/abserver"
+  ui_print "- �Ѱ�װ�������: $(basename "$BIN_SRC") -> bin/abserver"
+else
+  ui_print "! δ�ҵ���������ƣ����ű������Կ���"
+fi
+
+# ---------- ���ô����ں�(sing-box): ���, ���ܹ���װ ----------
+KERNELS="$MODDIR/bin/kernels"
+if [ -d "$KERNELS" ]; then
+  KSRC="$KERNELS/sing-box-$ARCH"
+  [ -f "$KSRC" ] || KSRC="$KERNELS/sing-box-arm64"
+  if [ -f "$KSRC" ]; then
+    cp -f "$KSRC" "$MODDIR/bin/sing-box"
+    chmod 0755 "$MODDIR/bin/sing-box"
+    ui_print "- �Ѱ�װ�����ں� sing-box ($(basename "$KSRC")) -> bin/sing-box"
+  fi
+fi
+
+unset __SY_MARK
+
+# ---------- ��ʼ������Ŀ¼ (�־û�) ----------
+ui_print "- ��ʼ������Ŀ¼ $DATA_DIR"
+mkdir -p "$DATA_DIR"/rules/dns "$DATA_DIR"/rules/mitm "$DATA_DIR"/rules/splash \
+         "$DATA_DIR"/logs "$DATA_DIR"/config "$DATA_DIR"/backup "$DATA_DIR"/scripts \
+         "$DATA_DIR"/cache "$DATA_DIR"/run "$DATA_DIR"/ca "$DATA_DIR"/config/script_meta
+
+# �״ΰ�װд��Ĭ������(����������)
+for c in sy.conf sources.conf splash_rules.conf mitm_rules.conf whitelist.conf notify_keywords.conf; do
+  if [ -f "$MODDIR/config/$c" ] && [ ! -f "$DATA_DIR/config/$c" ]; then
+    cp -f "$MODDIR/config/$c" "$DATA_DIR/config/$c"
+  fi
+done
+if [ ! -f "$DATA_DIR/config/mitm_rules.conf" ] && [ -f "$MODDIR/config/mitm_rules.conf" ]; then
+  cp -f "$MODDIR/config/mitm_rules.conf" "$DATA_DIR/config/mitm_rules.conf"
+fi
+
+# ============================================================
+#  ��֤��: ������ģ�� overlay ֤�� + �ͷŶ�������֤�项��ģ��
+# ============================================================
+CERT_HASH=""
+SYS_CACERTS_SRC="$MODDIR/system/etc/security/cacerts"
+mkdir -p "$SYS_CACERTS_SRC"
+
+if [ -x "$MODDIR/bin/abserver" ]; then
+  ui_print "- ���ɸ�֤�� (RSA 2048, ��Ч�� 10 ��)"
+  CA_OUT=$("$MODDIR/bin/abserver" ca -dir "$DATA_DIR/ca" -cn "SY Root CA" \
+             -cacerts "$SYS_CACERTS_SRC" 2>/dev/null)
+  CERT_HASH=$(echo "$CA_OUT" | sed -n 's/.*HASH=//p' | tr -d '\r' | tail -n1)
+  ui_print "- $CA_OUT"
+fi
+# openssl ����
+if [ -z "$CERT_HASH" ] && [ -f "$DATA_DIR/ca/ca.crt" ] && command -v openssl >/dev/null 2>&1; then
+  H=$(openssl x509 -inform PEM -subject_hash_old -in "$DATA_DIR/ca/ca.crt" 2>/dev/null | head -n1)
+  [ -n "$H" ] && { CERT_HASH="$H.0"; cp -f "$DATA_DIR/ca/ca.crt" "$SYS_CACERTS_SRC/$CERT_HASH"; }
+fi
+[ -z "$CERT_HASH" ] && [ -f "$DATA_DIR/ca/ca.crt" ] && { CERT_HASH="sy.0"; cp -f "$DATA_DIR/ca/ca.crt" "$SYS_CACERTS_SRC/$CERT_HASH" 2>/dev/null; }
+
+if [ -f "$DATA_DIR/ca/ca.crt" ]; then
+  ui_print "- ��֤����д����ģ�� overlay: system/etc/security/cacerts/$CERT_HASH"
+
+  # ---------- �ͷŶ�������֤�项��ģ�� (���� Android 14+ APEX + ����չʾ) ----------
+  ui_print "- �ͷŶ�������֤�项��ģ�� -> $CERT_MOD"
+  rm -rf "$CERT_MOD"
+  mkdir -p "$CERT_MOD"
+  # �汾�Ÿ�����ģ�飬��������Ӳ������ɰ汾Ư��
+  MV=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null | tr -d '\r' | head -n1)
+  MVC=$(sed -n 's/^versionCode=//p' "$MODDIR/module.prop" 2>/dev/null | tr -d '\r' | head -n1)
+  [ -n "$MV" ] || MV=v1.0.0
+  [ -n "$MVC" ] || MVC=10000
+  cat > "$CERT_MOD/module.prop" <<EOF
+id=SY_cert
+name=SY �� ��֤��
+version=$MV
+versionCode=$MVC
+author=vip-svip
+description=[�Զ�����] �ɹ������ģ�鰲װʱ�ͷţ����𽫸�֤��ע��ϵͳ������������ Android 14+ APEX�����𵥶�ɾ��������ģ��ж��һ��������
+EOF
+
+  mkdir -p "$CERT_MOD/system/etc/security/cacerts"
+  cp -f "$DATA_DIR/ca/ca.crt" "$CERT_MOD/system/etc/security/cacerts/$CERT_HASH" 2>/dev/null
+
+  cat > "$CERT_MOD/post-fs-data.sh" <<'CERTEOF'
+#!/system/bin/sh
+# ��֤��ע�� (�� Android 14+ conscrypt APEX ����)
+MODDIR=${0%/*}
+DATA_DIR=/data/adb/SY
+[ -d "$DATA_DIR" ] || DATA_DIR=/data/SY
+SRC_LINK=/data/adb/modules/SY/system/etc/security/cacerts
+LOG="$DATA_DIR/logs/cert.log"
+mkdir -p "$DATA_DIR/logs" 2>/dev/null
+exec >>"$LOG" 2>&1
+echo "=== cert post-fs-data $(date) ==="
+
+# 1. ��ģ�� overlay ֤��
+if [ -d "$SRC_LINK" ]; then
+  chmod 0755 "$SRC_LINK" 2>/dev/null
+  chmod 0644 "$SRC_LINK"/* 2>/dev/null
+  chown 0:0 "$SRC_LINK"/* 2>/dev/null
+fi
+
+# 2. Android 14+ : conscrypt ֤��λ��ֻ�� APEX���� bind mount
+APEX_CACERTS=/apex/com.android.conscrypt/cacerts
+if [ -d "$APEX_CACERTS" ]; then
+  STORE="$DATA_DIR/.apexcerts"
+  rm -rf "$STORE"; mkdir -p "$STORE"
+  cp -f "$APEX_CACERTS"/* "$STORE"/ 2>/dev/null
+  if [ -d "$SRC_LINK" ]; then
+    cp -f "$SRC_LINK"/*.0 "$STORE"/ 2>/dev/null
+  fi
+  chmod 0644 "$STORE"/* 2>/dev/null
+  chown 0:0 "$STORE"/* 2>/dev/null
+  # ж�ؾɹ��غ��ع�
+  umount "$APEX_CACERTS" 2>/dev/null
+  mount --bind "$STORE" "$APEX_CACERTS" 2>/dev/null \
+    && echo "apex cacerts bind ok" || echo "apex cacerts bind FAILED"
+fi
+echo "=== cert done ==="
+CERTEOF
+  chmod 0755 "$CERT_MOD/post-fs-data.sh"
+
+  cat > "$CERT_MOD/service.sh" <<'SVC'
+#!/system/bin/sh
+# late_start �ٶ���һ�� (�����豸 APEX �� post-fs-data ���ع���)
+mkdir -p /data/adb/SY/logs 2>/dev/null
+APEX=/apex/com.android.conscrypt/cacerts
+STORE=/data/adb/SY/.apexcerts
+if [ -d "$APEX" ] && [ -d "$STORE" ]; then
+  mount 2>/dev/null | grep -q "$APEX" || mount --bind "$STORE" "$APEX" 2>/dev/null
+fi
+SVC
+  chmod 0755 "$CERT_MOD/service.sh"
+
+  cat > "$CERT_MOD/uninstall.sh" <<'UNI'
+#!/system/bin/sh
+umount /apex/com.android.conscrypt/cacerts 2>/dev/null
+echo "cert module removed"
+UNI
+  chmod 0755 "$CERT_MOD/uninstall.sh"
+
+  ui_print "- ��֤����ģ�����ͷţ�������ϵͳȫ������"
+else
+  ui_print "! ��֤������ʧ�� (ȱ����������� openssl)����������������װ"
+fi
+
+# ============================================================
+#  ���ù����� App
+#  ˵������װʧ�ܲ�Ӱ��ģ�鱾�壬ֻ��ʾ�û����Ժ���������ԡ�
+#        ���ﲻ return / exit����װ���̱���������ꡣ
+# ============================================================
+if [ -f "$MODDIR/app/SYManager.apk" ]; then
+  ui_print "- ���ڰ�װ���ù����� App"
+  APPOUT=$(sh "$MODDIR/scripts/installapp.sh" install 2>&1)
+  ui_print "- $APPOUT"
+else
+  ui_print "! δ������� App����������"
+fi
+
+# ---------- Ȩ�� ----------
+ui_print "- �����ļ�Ȩ��"
+set_perm_recursive "$MODDIR" 0 0 0755 0644
+set_perm_recursive "$DATA_DIR" 0 0 0755 0644
+[ -f "$MODDIR/bin/abserver" ] && set_perm "$MODDIR/bin/abserver" 0 0 0755
+for f in "$MODDIR"/*.sh "$MODDIR"/scripts/*.sh; do
+  [ -f "$f" ] && set_perm "$f" 0 0 0755
+done
+[ -f "$MODDIR/app/SYManager.apk" ] && set_perm "$MODDIR/app/SYManager.apk" 0 0 0644
+if [ -d "$CERT_MOD" ]; then
+  set_perm_recursive "$CERT_MOD" 0 0 0755 0644
+  for f in "$CERT_MOD"/*.sh; do [ -f "$f" ] && set_perm "$f" 0 0 0755; done
+fi
+
+ui_print "- ��װ��ɣ���������Ч"
+ui_print "- ���: KernelSU �������е����ģ�顸�򿪡���ť"
+ui_print "- ������ App: �����ϵġ�SY ��������"
+ui_print "- ����Ŀ¼: $DATA_DIR"
+ui_print "- ��֤��: $CERT_MOD (������ģ��)"
+
+===== README.md =====
+# SY �� AdGuard Home �ںϹ�����أ�KernelSU / Magisk ģ�飩
+
+> **AdGuard Home �ں� �� uBlock Origin �﷨** �ںϹ�������
+> ����������ϵ + ȫ��̬�ű���չ + **Shadowrocket ������·�ɲ�** + ���Ϳ���̨��� + ���ù����� App
+> ���� OverlayFS / bind mount ���أ�ж���޲�����**��ռ�� VPN ͨ��**��**��ȫ���߿���**
+
+---
+
+## ��������
+
+| �㼶 | ���� | ʵ�� |
+|------|------|------|
+| �������� | AdGuard Home �� uBlock Origin �ںϹ��� | `scripts/engine.sh` + `engine_parse/emit/hosts/test.awk` |
+| ��һ�� | DNS ���ں����� | `scripts/dns.sh` + hosts �󶨹��أ����� AdGuard / Pi-hole / uBO ���� |
+| �ڶ��� | MITM �м���͸������ | `scripts/mitm.sh` + `abserver proxy`���Զ�ǩ����ע���֤�� |
+| ������ | ��ǿ����������� | `scripts/splash.sh`���ں˼����ڼ��� + �Զ����� |
+| �������� | ���� / IP / ���� / �˿� | `scripts/netblock.sh` |
+| ������� | �����ں� / �ڵ� / �� IP й¶ | `scripts/proxynode.sh` |
+| **����·�ɲ�** | **Shadowrocket ������·�� / ������ / ���ӹ��� / �ӳٲ���** | `scripts/route.sh` + `abserver route`�����ñ��룩+ `abserver clash`��Clash API �ͻ��ˣ� |
+| **���� App** | **�����������LSPosed ʽ���� App��** | `app/SYManager.apk` + `scripts/installapp.sh`��`pm` �Ựʽ��װ + SELinux �����Ĵ����� |
+| ��չ | �ű���չ���� | `scripts/scripts_ext.sh`���ͺ�ű� / MITM ���� / QX-Surge-Loon-SR ���� |
+| ��� | һ�廯���߹��� | `webroot/index.html`��**���Ϳ���̨** + ĥɰ������+ `abserver serve` ���� Web ���� |
+
+---
+
+## �ںϹ�������
+
+������ **AdGuard Home �Ĺ�������Ϊ�ں�**���ں� **uBlock Origin ��ƥ��ģ�������ȼ�**���ô� POSIX sh + POSIX awk ʵ�֣�**���ⲿ��������ȫ���߿���**���� Android��toybox / busybox awk�������棨gawk / mawk������Ϊһ�¡�
+
+### ֧�ֵĹ����﷨�������������ͬһ�ļ���
+
+**AdBlock / AdGuard / uBlock Origin �������**
+
+```
+||ads.example.com^              ��ê�����أ�������
+|https://cdn.example.com/js/|   ��ȷ URL ê��
+/ads?banner\d+/                 �������
+@@||good.example.com^           �������
+*  ^                            ͨ�����ָ���
+```
+
+**���η�**
+
+| ��� | ���η� |
+|------|--------|
+| ���ȼ� | `$important`����Ҫ���أ� |
+| ������� | `$badfilter`���ر�ͬ�ι��򣩡�`$match-case` |
+| ���ⷶΧ | `$denyallow=` |
+| ������ | `$client=`��`$ctag=`��`$domain=` |
+| ��Դ�ж� | `$third-party` / `$3p`��`$first-party` / `$1p` |
+| DNS | `$dnsrewrite=` |
+| ��Ӧ��д | `$csp=`��`$removeparam=`��`$redirect=`��`$cookie=`��`$header=`��`$method=`��`$permissions=` |
+| ��Դ���� | `$document` `$script` `$image` `$stylesheet` `$xmlhttprequest` `$subdocument` `$websocket` `$webrtc` `$ping` `$object` `$media` `$font` `$other` `$popup` `$all` `$empty` `$mp4` `$inline-script` `$inline-font` `$generichide` `$specifichide` `$elemhide` `$genericblock` |
+
+**Cosmetic / ע�루uBlock Origin �� AdGuard ˫�﷨��**
+
+```
+example.com##.ad-banner              Ԫ������
+example.com#@#.ad-banner             ȡ������
+example.com#$#.ad { display:none }   AdGuard CSS ע��
+example.com#?#div:has(> .sponsor)    ��չ CSS
+example.com##+js(set-constant, ...)  uBO �ű�ע��
+example.com#%#//scriptlet('...')     AdGuard �ű�ע��
+example.com##^script:has-text(ads)   HTML ����
+```
+
+**hosts / dnsmasq / ������**
+
+```
+0.0.0.0 ads.example.com       hosts ����
+127.0.0.1 tracker.example.com
+1.2.3.4   rewrite.example.com hosts ������д
+address=/ads.example.com/     dnsmasq ����
+local=/ads.example.com/       dnsmasq ����Ӧ��
+example.com                   �������嵥
+```
+
+ע�ͣ�`!` `#` `;` �Լ� `[Adblock Plus 2.0]` ͷ��
+
+### ���ȼ�����
+
+�� uBlock Origin / AdGuard Home ��ȫһ�£�
+
+```
+��Ҫ����  >  ��Ҫ����  >  ��ͨ����  >  ��ͨ����  >  δ���У�Ĭ�Ϸ��У�
+```
+
+- `$badfilter` ��ȷ�ر�ͬ�ι���
+- `$denyallow` �޶������������÷�Χ��
+- �������`@@`������������ `$important` ʱ����Ϊ������ȼ���
+
+### ����
+
+```sh
+sh scripts/engine.sh build          # ����ȫ������
+sh scripts/engine.sh stats          # ͳ�Ƹ������������
+sh scripts/engine.sh syntax         # ���﷨�ֲ�����
+sh scripts/engine.sh verify         # ������죨��Ч/����/��ͻ��
+sh scripts/engine.sh test <domain>  # ������������ϣ���������� cosmetic ����ͳ�ƣ�
+sh scripts/engine.sh testfile <f>   # ����������ϣ�TSV �� 5 ��Ϊ��������������
+sh scripts/engine.sh paths          # ���������·��
+sh scripts/engine.sh clear          # ��ձ������
+```
+
+�����ڣ�**��������** ҳ��`dns.sh` ���ṩ `engine-*` ������ת����
+
+---
+
+## ����·�ɲ㣨Shadowrocket ��������
+
+�ײ��� **sing-box** �������棬`scripts/route.sh` + `abserver route` �������棬�� Shadowrocket / Clash ���ס�����·�� + ������ + ���ӹ����������ᵽģ���`profile.json` ��**Ψһ��ʵԴ**����塢CLI���ű�����дͬһ�ݣ����ٳ���"�����˽ű�����"�������
+
+### ��������
+
+| Shadowrocket ���� | ��ģ��ʵ�� |
+|-------------------|-----------|
+| ����·�ɣ����������� | `abserver route` �� `profile.json` ����� sing-box ���ã�����˳��ƥ��˳�� |
+| �����飨select / url-test / fallback�� | `ProxyGroup` ����Ϊ sing-box `selector` / `urltest` ��վ |
+| �����б� / ǿ�ƹر� | `abserver clash conn` / `clash close`���� Clash API�� |
+| �ӳٲ��٣������� | `abserver clash delay`����塸��������ڵ㡹ҳ֧��ȫ������ |
+| ʵʱ�������� | `abserver clash traffic`����� canvas 60 ��������� |
+| �ں���־�� | `abserver clash logs -level -lines` |
+| DNS ���� / FakeIP | `profile.json` �� `dns` �Σ����ں˰汾�Զ��л��﷨ |
+| ���򼯣�geo ���ݣ� | `rule_set` + `.srs` �����Ƹ�ʽ��**16 �����ù�����ģ�����ߴ��** |
+| �ڵ㶩�� / �������� | `route import`��vmess / vless / trojan / ss / ssr / hysteria2 / tuic / share-link / clash-yaml / base64 ���ģ� |
+
+### ����
+
+```sh
+sh scripts/route.sh status-json            # ����ã��ں� / profile / ����״̬
+sh scripts/route.sh summary                # ����ã��ڵ� / ������ / ���� / ͳ��
+sh scripts/route.sh rulesets               # ����ã����� + ���ع����嵥
+sh scripts/route.sh set-profile            # ����ã�д�� profile.json������ JSON �Ϸ���У�飩
+sh scripts/route.sh reload                 # �ر��벢�������ں�
+sh scripts/route.sh clash <sub> -json      # ͸�� Clash API��status/conn/traffic/proxies/delay/select/mode/logs/close��
+
+# ����ࣨabserver route ...��
+abserver route compile   -sb-version 1.14.3 -mirror testingcf   # �����ں�����
+abserver route lint                                             # ������죨��Ч/����/��ͻ��
+abserver route test      -domain www.google.com -port 443 -v     # ��������������ϣ������г��ж����裩
+abserver route explain                                          # ����ĳ������Ϊ������/������
+abserver route import    -in links.txt -format share-links      # �ڵ㵼��
+abserver route mirrors   -probe                                 # ���򼯾������
+abserver route fetch-rules -dir rulesets                        # ���߹���ץȡ
+abserver route dnsprobe  -domain www.baidu.com                  # DNS ������ʵ���٣�UDP / DoT / DoH��
+abserver clash           -api 127.0.0.1:9090 status -json       # Clash API �ͻ���
+```
+
+### ��ͻ��˹����﷨
+
+����� `profile.json` ֱ�ӳԸ��ҿͻ��˵�д�����ڲ�ͳһ��һ����`NormalizeKind`����
+
+```
+DST-PORT / DEST-PORT / DESTINATION-PORT   �� Ŀ��˿�
+HOST / HOST-SUFFIX / HOST-KEYWORD / HOST-WILDCARD
+DOMAIN-SET / IP-SET / RULE-SET            �� ����
+URL / URL-REGEX                           �� URL ����
+SRC-IP / SOURCE-IP-CIDR �� IP6-CIDR / IPV6-CIDR
+GEO-SITE / GEO-IP / ASN �� PROCESS / PROCESS-NAME-REGEX
+FINAL-MATCH / MATCH-ALL                   �� ����ƥ��
+```
+
+> ������һ���޵���һ����ʵ������ bug��Shadowrocket / Clash д���� `DST-PORT` ԭ�Ȼᱻ��Ϊ"δ֪��������"��**��������**��ֻ��һ�� warn��
+
+### �ں˰汾����
+
+sing-box ���汾�﷨�ϴ����أ���������Ŀ���ں˰汾��֧�����`-sb-version`���� `-kernel` �Զ����汾����
+
+| �ֶ� | 1.11 | 1.12 | 1.13 | 1.14 |
+|------|------|------|------|------|
+| DNS ������ | ���� `address` | `type`/`server` ���� | ͬ�� | **`address` ���Ƴ�** |
+| `default_domain_resolver` | ��֧�� | ��֧�� | ͬ�� | ͬ�� |
+| ��վ `sniff` | ���� | ���� | **���Ƴ�**����·�ɹ��� `action=sniff`�� | ���Ƴ� |
+| fakeip ���� | `dns.fakeip` �� | ������ `inet4_range` | ͬ�� | **`dns.fakeip` �����Ƴ�** |
+| `download_detour` | ���� | ���� | ���� | ���� |
+
+### ���򼯾����й���½ʵ�⣩
+
+`abserver route mirrors -probe` ʵ������2026-10���й���½���磩��
+
+| ���� | ��� | ��ʱ |
+|------|------|------|
+| `testingcf.jsdelivr.net` | 200 | 0.30 s �� **Ĭ��** |
+| `fastly.jsdelivr.net` | 200 | 0.87 s |
+| `gh-proxy.com` | 200 | 1.05 s |
+| `ghproxy.net` | 200 | 1.27 s |
+| `cdn.jsdelivr.net` | ��ʱ | �� |
+
+> ԭ��Ĭ���õľ��� `cdn.jsdelivr.net`���ڹ��ڵ���**Ĭ�����ò�����**�������е� `testingcf`��
+
+---
+
+## ���ù����� App
+
+ģ��������һ�������ԭ�� App��`app/SYManager.apk`��Լ 53 KB������װʱ�Զ�װ�����棬���õ�ͬ LSPosed �����ù�������
+
+- **����ͼ�� / ��ݴ���** һ����ͣ���������أ�
+- **��פ֪ͨ** ��ʾʵʱ��������������
+- **���� WebView** ֱ�Ӵ򿪱���壬�������������
+- **��ȫ����**��������������������Ȩ�ޡ�
+
+��װ�� `scripts/installapp.sh` �����������ã�`customize.sh` װ��ʱ����尴ť���������ף�����ͬһ���߼����ȹ��ĿӶ�д�ڽű�ͷע���
+
+1. APK �� `/data/adb/modules` ��ʱ SELinux ��������ģ��ģ�`installd` ������ �� �� `chcon u:object_r:apk_data_file:s0`��
+2. Android 11+ ���û�������ʽ `--user 0`��
+3. `pm install` ʧ��ʱ�˳��뾭������ 0 �� ����ƥ�������� `Success`��
+4. �����豸ֻ�лỰʽ��װ�ųɹ� �� `pm install-create / -write / -commit` ���ס�
+
+---
+
+## Ŀ¼�ṹ
+
+```
+SY/
+������ module.prop            # ģ��Ԫ��Ϣ
+������ customize.sh           # ��װ�ű����Զ�ѡ�� ABI �����ƣ�
+������ post-fs-data.sh        # hosts �� + ֤�� OverlayFS ׼��
+������ service.sh             # �������񣨹��� / ���� / ���� / ��壩
+������ action.sh              # KernelSU ��塸��������ť �� �������
+������ uninstall.sh           # ж����������֤����ģ�飩
+������ .gitattributes         # ͳһ LF ���У���ֹ Android ���﷨����
+������ bin/                   # abserver ���ܹ���̬������
+��   ������ abserver-arm64 / abserver-arm / abserver-amd64
+������ app/                   # ���ù����� App
+��   ������ SYManager.apk      # Լ 53 KB����װʱ�Զ�װ������
+������ rulesets/              # 16 ������ .srs ���߹��򼯣�sing-box binary ��ʽ��
+������ src/                   # abserver �� Go Դ�루��������䵽 bin/��
+��   ������ sbcfg.go           # sing-box ���ñ����������ں˰汾��֧��
+��   ������ rules.go           # ����ģ�� / ���� / ��ͻ��˱�����һ�� / �������
+��   ������ cmd_route.go       # route ��������
+��   ������ cmd_dnsprobe.go    # DNS ������ʵ���٣���д DNS ���ģ�UDP/DoT/DoH��
+��   ������ api_clash.go       # /api/clash �˵�
+��   ������ clashapi.go        # Clash API �ͻ���
+��   ������ serve.go           # ��� Web ���� + �ű��ţ�/api/route��/api/exec��
+������ scripts/               # ���� shell ����
+��   ������ common.sh          # �����⣨·�� / ��־ / ���� / JSON / base64 / ���빤�ߣ�
+��   ������ ctl.sh             # ͳһ�������
+��   ������ engine.sh          # �ںϹ�������������
+��   ������ engine_parse.awk   # ���﷨��������TSV �淶����
+��   ������ engine_emit.awk    # ���෢����
+��   ������ engine_hosts.awk   # hosts �����������ȼ���ֵ��
+��   ������ engine_test.awk    # ��������������� / ������
+��   ������ filter.sh          # �� filter-* ������ݲ�
+��   ������ dns.sh             # DNS ���ز�
+��   ������ dnssrv.sh          # ���� DNS �ӹ�
+��   ������ mitm.sh            # MITM ͸��������
+��   ������ splash.sh          # ����������
+��   ������ netblock.sh        # ��������
+��   ������ proxynode.sh       # ���������gen_config ��ί�� route.sh��
+��   ������ route.sh           # ����·�ɲ㣨profile ��һ��ʵԴ��
+��   ������ installapp.sh      # ���� App ��װ / ж�� / ״̬
+��   ������ selfcheck.sh       # �Լ� / �ͷ�������
+��   ������ scripts_ext.sh     # �ű���չ����
+��   ������ lists.sh / ruleset.sh / updater.sh / backup.sh / panel.sh / ...
+������ config/                # Ĭ������ģ�壨�����κ��������ع���
+������ tests/                 # �Լ��׼�
+��   ������ run_tests.sh          # ��������Լ죨7 �֣�
+��   ������ run_e2e.sh            # �����˵�����֤�������˹��Ƶ�����ֵ��
+��   ������ run_module_checks.sh  # ģ�鼶��̬У�飨10 �� A�CJ��
+��   ������ run_panel_api.sh      # ���� abserver serve����˵�� HTTP��29 �
+��   ������ run_kernel_compat.sh  # ���ں�˫�汾 check + run��1.11.15 / 1.14.3��
+��   ������ run_route_e2e.sh      # ��������֤�������� + Clash API �������л�
+��   ������ verify_ui_assets.py   # ����ʲ��ع飨318 �� id / 225 �� action �㶪ʧ��
+��   ������ ui_baseline.json      # ����ʲ������嵥
+��   ������ ui_runtime_check.js   # jsdom ��ʵִ����� JS��ģ�⵼������
+��   ������ ui_shot_panel.js      # ��ʵ Chromium ��ҳ��Ⱦ������岢��ͼ��ע�� KSU ׮��
+��   ������ ui_screenshot.js      # Chromium ��Ⱦ��ͼ + ����/����/���ܶ���
+��   ������ perf_compare.py       # �����Ⱦ���ܶԱȣ�dumpsys gfxinfo������ȡ��λ����
+��   ������ make_heavy_variant.py # ����"�ز���"�ܿر��壨DOM ���䣬���� CSS��
+��   ������ perf_serve.sh         # ���豸�ϲ������������񣬹�ͬ����汾�Ա�
+��   ������ corpus/01_mixed.txt   # ���﷨�������
+��   ������ gen_preview.py        # �����Դ���������� ui-preview.html
+��   ������ expect.tsv            # �������б�
+������ package.sh             # ����ű���Ԥ�� �� ��� �� ZIP У�� �� SHA256��
+������ tools/                 # �������̸���������ģ������
+��   ������ push_api.py           # Git ֱ��������ʱ������ REST API �����ύ
+��   ������ verify_remote.py      # ����ȶ�Զ�� tree �뱾�� HEAD��path/mode/blob��
+��   ������ verify_files.py       # �ȶ����ɹؼ��ļ���Զ�������뱾�أ��� Contents API��
+��   ������ release_update.py     # �滻 Release ���������˴�С
+������ ui-preview.html        # ��徲̬Ч��Ԥ������ֱ����������򿪣�
+������ webroot/index.html     # ���ǰ�ˣ�AdGuard Home ���ֹǼ� + ĥɰ������
+������ system/etc/security/cacerts/  # ��֤�����Ŀ��
+������ META-INF/              # ˢ������
+```
+
+---
+
+## ��װ
+
+1. �� KernelSU / Magisk ��������ˢ�뱾ģ�� ZIP��
+2. ��װ�ű����豸 ABI �Զ�ѡ�� `abserver` �����ƣ�`update-binary` ������̽�� Magisk �� KernelSU �� `util_functions.sh`�����߶�ȱʧʱ�Զ�����Ϊ���ð�װ����
+3. �����豸��`service.sh` �Զ�Ӧ�ù��������������
+4. ��֤�����Ϊ������ģ�� `SY_cert` �ͷţ����� MITM ץ��������ģ��ж��һ��������
+
+> KernelSU ˵������ģ�鲻���� metamodule ���ɹ�����hosts ��֤���ͨ����ʽ bind mount ��Ч����
+
+## ʹ�����
+
+- **KernelSU �ڴ�**��KernelSU �������е����ģ�鿨Ƭ�� **��** ��ť����ȡ `webroot/`����
+- **������ť**�����ģ�鿨Ƭ�Ĳ�����ť���� `action.sh`��������� / ���������ʵ�ַ�����ơ�
+- **����������**��������� `http://<�ֻ�IP>:8848?token=<����>`��
+
+## ������� (abserver)
+
+```
+abserver fetch   -url URL -out FILE [-timeout SEC]   # HTTP(S) ����
+abserver ca      -dir DIR [-cn NAME]                 # ���ɸ� CA
+abserver proxy   -http :8080 -https :8443 ...        # MITM ����
+abserver serve   -addr :8848 -webroot webroot ...    # ��� Web ����
+abserver token                                       # ���ɷ�������
+abserver route   <sub>                               # ����·�ɲ㣨compile/lint/test/explain/import/����
+abserver clash   -api HOST:PORT <sub>                # Clash API �ͻ��ˣ�status/conn/proxies/delay/����
+```
+
+`abserver serve` ����̬����⻹��¶�����ű��ţ������ HTTP �������л�����ͬһ���߼���
+
+| �˵� | ���� |
+|------|------|
+| `GET /api/exec?cmd=��` | ִ�� shell���ȼ� KernelSU �� `ksu.exec`�� |
+| `POST /api/route` `{"args":["summary"]}` | ͸���� `route.sh`��������� JSON �壨�ܿ����������У� |
+| `GET /api/clash?sub=status\|conn\|traffic\|proxies\|delay\|select\|mode\|logs\|close` | Clash API ���� |
+| `GET /api/proxy` `/api/dns` �� | ����ű�������͸�� |
+
+��Ȩ���� `X-Auth-Token` ����ͷ�� `?token=` ��ѯ��������̬��Դע�� `window.__SY_TOKEN__`��������������������ֹ�ƴ token��
+
+## ��ȫ����
+
+- **�ű�ɳ��**������ű��Զ�ɨ������ API ������Runtime.exec / su / sms / contacts �ȣ������м����ء�
+- **��Ӧ�ø���**��MITM ͨ�� iptables UID ��׼����������Ŀ�� APP ��Ч��
+- **ϸ���Ȱ�����**��֧�� / ��¼������Ĭ�Ϸ��У������� 1 ��ָ���
+- **��ϵͳ�����Ķ�**��ȫ��ͨ�� OverlayFS / bind mount ʵ�֣�ж�غ���ȫ�ָ���
+
+## �Լ�
+
+```sh
+sh tests/run_tests.sh all          # ��������Լ죨����/�ݵ�/������/����ʽ/����/�﷨/��׳�ԣ�  92 ��
+sh tests/run_e2e.sh .              # �����˵�����֤��ÿ���﷨�����Ƶ�����ֵ��              81 ��
+sh tests/run_module_checks.sh all  # ģ�龲̬У�飨�﷨/����ֲ��/�嵥/ABI/����/���/HTML/����/��·/UI ����ʱ�� 331 ��
+sh tests/run_module_checks.sh J    # ֻ������ʲ��ع� + jsdom ����ʱ + Chromium ���ֶ���
+sh tests/run_panel_api.sh          # ���� abserver serve����˵�� HTTP������Ȩ / ��̬ע�� / ����� POST��  29 ��
+sh tests/run_kernel_compat.sh      # �� sing-box �ں�˫�汾 check + run��1.11.15 / 1.14.3��  10 ��
+sh tests/run_route_e2e.sh          # ��������֤���ֹ������� + Clash API �������л�              9 ��
+python tests/verify_ui_assets.py   # ����ʲ��ع飨318 id / 225 action / 131 ������
+python tests/gen_preview.py        # �� webroot/index.html �������� ui-preview.html
+node tests/ui_runtime_check.js     # jsdom ��ʵִ����� JS��ģ�⵼������
+node tests/ui_shot_panel.js shots  # ��ʵ Chromium ��ҳ��Ⱦ������岢��ͼ��ע�� KSU �����ݣ�
+python tests/perf_compare.py <���к�> "�����=http://127.0.0.1:8848/index.html" \
+                                  "�����=http://127.0.0.1:8849/index.html"   # ������ܶԱ�
+sh package.sh                      # �����У�� ZIP����� dist/SY_<�汾>.zip + .sha256��
+```
+
+> `run_module_checks.sh` �� J ����ڼ�⵽ jsdom / playwright ʱ�Զ�������ʵ DOM ����ʵ���������
+> �������Ƿ񱻲��С����ӿ��Ƿ���������ʵ�����ñ���ģ����Ԫ����������δ��װʱ�Զ�������
+
+## ����Ԥ��
+
+�����ֱ�Ӵ� `ui-preview.html` �ɲ鿴��徲̬Ч������ʽ����ʵ���һ�£�����Ϊʾ��ֵ�������Ͻǿ��л���ǳɫ��
+
+### ������˵��
+
+�����һ�� **���Ϳ���̨**������ AdGuard Home �Ŀ�Ƭդ��Ǽ���ĥɰ�����ʸУ�����Ϣ�ܹ���������·�� / ���� / ���� / ���á����±��ţ��� 21 ��ҳ���ս� 5 ���������顣
+
+| ��Ŀ | ȡֵ |
+|------|------|
+| ���� | ���� sticky ���� `header` + ���� `nav-tabs`������ / ����·��? / ����? / ����? / ����?��+ `page-title` ҳ������� + `col-12`/`col-6` ��Ƭդ�� |
+| ��ɫ���ƣ�Ĭ�ϣ� | `--bgcolor:#0b0f14`��`--bgcolor-2:#0f151c`��`--mcolor:#e6edf3`��`--scolor:#656d76` |
+| ǳɫ���� | `--bgcolor:#f6f8fa`��`--bgcolor-2:#eef1f5`��`--mcolor:#1f2328` |
+| ǿ��ɫ | `--accent:#58a6ff`��`--green:#3fb950`��`--amber:#d29922`��`--red:#f85149`��`--purple:#a371f7`��`--cyan:#2dd4bf` |
+| �ӳ�ɫ�� | `--lat0:#3fb950` �� `--lat1:#7ee787` �� `--lat2:#d29922` �� `--lat3:#f0883e` �� `--lat4:#f85149`��`<100 / <200 / <400 / <800 / ����` ms�� |
+| ĥɰ���� | `backdrop-filter` **��**ʩ���� `.header` �븡�� `.dropdown-menu` �� |
+| ������� | `.seg` �ֶοؼ���`.spark` canvas ���ߡ�`.nrow` �ڵ��С�`.lat.p0~p4` �ӳٻձꡢ`.ctbl` ���ӱ���`.term` �ն���־����`.rrow` �����С�`.wgrid` ��������`.diag` ������ϡ�`.foldbox` �۵��� |
+
+**�������飨21 ҳ��**
+
+```
+����
+����·�� ?  �������� �� ��������ڵ� �� ʵʱ���� �� ��������� �� DNS ���ѯ �� �ں���־ �� �ں������� �� �ڵ��붩��
+����     ?  DNS �����б� �� �Զ�����˹��� �� ���ܹ��ˡ���֤�� �� ���ط��� �� ֪ͨ����
+����     ?  ���ù����� App �� �ű���չ �� �������� �� �����뱸��
+����     ?  �������� �� DNS ���� �� ϵͳ����־
+```
+
+���������������������� 9 ��ҳ���ʵʱ�������ߣ�60 ��������ڣ����������۵� + �������� + �ֶ��л������ӱ� + ǿ�ƹرյ������ӡ�������� + ��������������ϣ������г��ж����裩��DNS ������ʵ���١��ں���־�������� / ���� / ����ץȡ����`profile.json` ���߱༭ + ���������ա����� App һ����װ/ж��/�򿪡�ϵͳ�Լ� + ��ϰ�������
+
+**����Լ�����Ͷ˻������Ĺؼ���**
+
+- `backdrop-filter` ȫҳֻ���������� `.header` �� `.dropdown-menu` ������һ���·ŵ� `.card` / `.btn` / �����ҳ�������ٶ��Ԫ�ػ����һ�㱳��ģ����Android WebView ��Ȼ������
+- ��ʹ�� SVG `feTurbulence` ���㣨ÿ֡���㣬���ۼ��ߣ������� `body::before` �ľ�̬ `radial-gradient` ���Ϊ�����ṩ��ģ����ɫ��
+- ����ֻ������ `transform` / `opacity` / `background-color` / `border-color`��ȫҳ�� `animation` ������
+- �������� `overflow`��խ�����ж��Ǻ������ ���� ���������˵��ᱻ���������õ���
+
+������������ `tests/run_module_checks.sh` J ���� `tests/ui_screenshot.js` �Զ����ԡ�
+
+### ���ʵ�⣺����ȷʵ�ǿ��������ֵ�
+
+����������"���Լ��"��������ͬһ̨�����ʵ�����**Υ��Լ���Ĵ���**��
+
+�豸��Redmi 23076RA4CB��sky2���� Android 13 �� arm64-v8a �� KernelSU v3.3.0 �� ϵͳ WebView 111
+�� 1080��2460 @ 60Hz �� ��ϵͳ�����������壬`dumpsys gfxinfo` ������ÿ�� 3 ��ȡ��λ����
+
+�Ա�������
+
+- **�����** = ��ǰ�����汾�����Ϳ���̨ + ĥɰ������`backdrop-filter` �� 2 ����
+- **�����** = v1 ��ʷ�汾��ԭ SY ���棩
+- **�ز�������** = �� `make_heavy_variant.py` ��**��ǰ���**���ɣ�DOM / ���� / ҳ��**��ȫ��ͬ**��ֻ�� `backdrop-filter` �̻�ȫҳ���ӻ� `feTurbulence` ����
+
+| ָ�� | ����� | ����� (v1) | �ز������壨�ܿأ� |
+|------|--------|-------------|-------------------|
+| ����֡ռ�� | **3.68 %** | 100 % | 100 % |
+| P50 ֡��ʱ | **19 ms** | 150 ms | 250 ms |
+| P90 ֡��ʱ | **22 ms** | 200 ms | 400 ms |
+| P95 ֡��ʱ | **24 ms** | 200 ms | 550 ms |
+| P99 ֡��ʱ | **31 ms** | 200 ms | 750 ms |
+| �� Vsync �� | **0.40 %** | 90.85 % | 99.47 % |
+| UI �̳߳�ʱ�� | **2.38 %** | 90.85 % | 92.11 % |
+| �������ʱ�� | **3.72 %** | 100 % | 100 % |
+| ������������Ⱦ֡�� | **1262** | 284 | 190 |
+
+���ۣ�
+
+1. **�޺���** ���� P50 ֡��ʱ�� 150 ms ���� 19 ms��**7.9��**��������֡�� 100 % ���� 3.68 %���� Vsync �ʴ� 90.85 % ���� 0.40 %��**227��**����
+2. **����ȷ��** ���� ��������**�ܿ�ʵ��**��DOM һ��δ�ģ�ֻ�Ѳ���ģ���̻�ȫҳ��P50 ���̴� 19 ms �ӻ��� 250 ms��**13��**������ Vsync �ʴ� 0.40 % �嵽 99.47 %�����ų���"�ǲ�������̫��""�ǲ��Ǳ�Ĵ���"��һ�н��ͣ����پ��� `backdrop-filter` ����ȫҳ + `feTurbulence` ������ɵġ�
+3. ���ַ�ʽ��`tests/perf_compare.py`������ԭʼ����� `tests/perf_results.txt`����
+
+> ��֪���ƣ�Android 13 ��Ӧ�ô��ڲ��� BLAST ���壬`SurfaceFlinger --latency` �Ըò㷵��ȫ�㣬
+> ��˳��ּ���޷��ɼ��������� gfxinfo ��֡��ʱ��λ������֡ռ����**��֡����һ��**�ĳ�ʱ��Ϊ׼��
+
+## ������ָ�
+
+��塸���� �� ������ָ���һ������ / �ָ� `config`��`rules`��`scripts`��
+
+## ��������
+
+��ģ�����ڸ����豸��ѧϰ���о��������ص��ط��ɷ��漰��Ӧ�÷���������߲���ʹ�ñ�ģ��������κκ������
+
+===== changelog.md =====
+# SY ģ�������־
+
+## v1.0.2 �� ��˽��й¶ǿ�� + ���� App ���������ϰ� / LSPosed��
+
+> ����۽�����˽��й¶���롸App ��ģ����������������޸���֪ȱ�ݡ�
+
+### ��������˽��й¶��scripts/leakguard.sh��
+- **DNS й¶����**��ǿ����ģ�� DNS������������� 53 ���ˣ���ֹ��ѯй¶����Ӫ�� DNS��
+- **IPv6 й¶����**���� v6 ����ʱ������� v6����ס��v4 ������v6 ��·���ľ���й©�ھ���
+- **��ʵ IP й¶����**����� STUN ��̽��˿ڣ�3478/5349/19302���������������� WebRTC ̽���档
+- **�� VPN �����㱼**���ں��ػ������ڶϿ������ж����ĳ������ָ����Զ����С�
+- **�������ڵ�й¶**������������ʱ���ֱ����������ʵ IP �ڶ���˲�䱩¶��
+- ֧�� `status/enable/disable/dns/ipv6/ip/vpn/node/apply/panic/restore/tune/report` ������������ϴ�״̬�Զ��ָ���
+
+### ���������� App ��ģ������
+- **���ϰ�����**��`SyAccessibilityService`������ App ������ʶ�𲢵������������ť���� splash.sh ���ǲ����� RN/WebView ���������ף�Ŀ��Ӧ����ǰ̨ʱ֪ͨģ���������ڡ�
+- **LSPosed ���**��`SyXposedEntry`����`xposed_init` + ����ʱ�����Žӣ��������������������˽Ŀ��Ӧ�ù��������Ӳ��ϱ�ģ�顣
+- Manifest ���� `BIND_ACCESSIBILITY_SERVICE`��`QUERY_ALL_PACKAGES` �� LSPosed Ԫ���ݡ�
+- ��������ͬһ�� `config/privacy_targets.txt` / `splash_targets.txt`���ž��������˽ű����ϡ���
+
+### ������������˽���ݰ���scripts/fetch_data.sh �� data/��
+- ���� **DB-IP Lite**��city/asn/country��CC BY 4.0�����������ٷַ���+ sing-geoip/geosite + MetaCubeX geoip/geosite + һ��׷��/����嵥������ȫ�����ж� IP �������������ࡣ
+- ���� MaxMind GeoLite2�������ɽ�ֹ�ٷַ��������� `data/geo/NOTICE.txt` ������Դ�����ɡ�
+
+### �޸�
+- **`tools/build_apk.sh` ֻ���� Windows ��**���ɰ�д�� `javac.exe`/`d8.bat`/`C:/��`�����水 `uname` �Զ����� Windows / Linux / macOS�����Զ�̽�� JDK �� build-tools��
+- **`package.sh`**������ `data/` Ŀ¼�������Ѹ߶��Ż��Ķ����ƿ⣨mmdb/db/dat������ STORED���������������ѹ������װ����
+- ���� v1.0.1 ���޸�������Ĭ������`rm -rf` ��ɾ������`ls|grep -c` ������SC2221��Go gofmt/������ȣ���
+
+### ��֤
+- Go `build`/`vet`/`staticcheck` �ɾ���`shellcheck`��warning �����ɾ���
+- �Լ��׼�ȫ��ͨ����APK �� `apksigner verify` У�飨�� v1+v2 ǩ������
+
+## v1.0.1 �� �ȶ�������ȷ���޸�
+
+> ����Ϊȱ���޸��汾���۽���ȷ�����ȶ��ԣ��������¹��ܡ�
+
+### �޸�
+- **�����벻�پ�Ĭ������**��`abserver route` �� Shadowrocket ���õ����У�`[Host]` �δ�ǰ��**��Ĭ����**���Ȳ����Ҳ����ʾ�����ָ�Ϊ��ʽ�澯������� `url-rewrite` / `mitm` ��֧����һ�£����⡸����ɹ�������û��Ч����
+- **`uninstall.sh` ��ɾ����**��֤����ģ�������� `rm -rf` ���� `${VAR:?}` ��ֵ�������������Ϊ��ʱ��ɾ��·����
+- **`scripts/route.sh` ���򼯼�����׳��**���� shell ͨ�������� `ls | grep -c`�������Ŀ¼���쳣�ļ������µĽ�������
+- **`scripts/scripts_ext.sh`**������ case ͨ���ص���`*.js|*.user.js` �� `*.js`�������� shellcheck SC2221 �澯��
+- **Go Դ��淶��������������**��`gofmt` �淶�� `clashapi.go`/`importcfg.go`/`main.go`/`model.go`/`rules.go`/`sbcfg.go`/`serve.go`���Ƴ�δʹ�õ� `hostLines`��staticcheck U1000���������� `dedupStrings`������һ�������İ���
+- **���ܹ��������ر���**���Է���������`CGO_ENABLED=0`��`-trimpath -ldflags "-s -w"`�����½������ `bin/abserver-arm64|arm|amd64`����У�� ELF ͷ��
+
+### ��֤
+- Go `build` / `go vet` / `staticcheck` ȫ���ɾ���`shellcheck`��warning �����ɾ���
+- �Լ��׼������� `run_tests.sh` 92/92��ģ�� `run_module_checks.sh` 324/324����� API `run_panel_api.sh` 29/29 ȫ��ͨ����
+
+## v1.0.0 �� AdGuard Home �� uBlock Origin �ںϰ�
+
+> �׸���ʽ�汾���� AdGuard Home �Ĺ�������Ϊ�ںˣ��ں� uBlock Origin ��ƥ�������ȼ�ģ�ͣ�
+> �� POSIX sh + POSIX awk ʵ�֣�**���ⲿ��������ȫ���߿���**����ռ�� VPN ͨ����
+
+### �ںϹ������棨`scripts/engine.sh`��
+- ȫ�﷨֧�֣������������ͬһ�����ļ���
+  - **AdBlock / AdGuard / uBO �������**��`||domain^`��`|http://...|`��`domain`��`/regex/`��`@@` ���⡢`*` �� `^` �ָ���
+  - **���η�**��`$important` `$badfilter` `$dnsrewrite=` `$client=` `$ctag=` `$denyallow=` `$domain=` `$third-party/$3p` `$first-party/$1p` `$match-case` `$csp=` `$removeparam=` `$redirect=` `$cookie=` `$header=` `$method=` `$permissions=`���Լ�ȫ����Դ���ͣ�`$document` `$script` `$image` `$stylesheet` `$xmlhttprequest` `$subdocument` `$websocket` `$webrtc` `$ping` `$object` `$media` `$font` `$other` `$popup` `$all` `$empty` `$mp4` `$inline-script` `$inline-font` `$generichide` `$specifichide` `$elemhide` `$genericblock`��
+  - **Cosmetic / ע�루uBO �� AdGuard ˫�﷨��**��`##` `#@#` `#$#` `#?#` `#%#` `$$`��`##+js(name,args)`��`#%#//scriptlet('name','args')`��`##^html-filter`
+  - **hosts ��ʽ**��`0.0.0.0 d` / `127.0.0.1 d` / `::1 d` / `IP d`��������д��
+  - **dnsmasq ��ʽ**��`address=/d/` `address=/d/IP` `local=/d/` `server=/d/`
+  - **�������嵥**��**�������**��ע�ͣ�`!` `#` `;` `[Adblock Plus 2.0]`��
+- ���ȼ������� uBlock / AdGuard Home ��ȫһ�£�**��Ҫ���� > ��Ҫ���� > ��ͨ���� > ��ͨ����**��`$badfilter` �ر�ͬ�ι���`$denyallow` �޶����ⷶΧ��
+- �������Ϊ������`block` / `block_imp` / `allow` / `allow_imp` / `pattern_*` / `heuristic_*` / `regex_*` / `rewrite` / `allow_deny` / `cosmetic_*` / `scriptlets` / `js_inject` / `css_inject` / `ext_css` / `html_filter`�������ɿ�ֱ�Ӹ�ϵͳʹ�õ� `hosts` �� AdGuard/dnsmasq ��ʽ `dnsrules.conf`��
+- **�������**��`engine verify`����ͳ����Ч����`$badfilter` ����������㼶����ͻ�
+- **�������**��`engine test <domain>` / `testfile <file>`��������׺����ֵ��������еĹ���ԭ�ġ����η�����д�����������ͳ�������ڸ�������������ࣨcosmetic / �ű�ע�룩����֧���������������� URL ��Ρ�
+
+### ��塸�Զ�����˹���ҳ
+- �ں�����ͳ�ơ����﷨�ֲ���������졢������ϡ��������һ��������
+- һ������ / �﷨���� / ��� / ��� / ��ա�
+
+### ���棺AdGuard Home ���ֹǼ� + ĥɰ����
+- **���ײ����廻�� AdGuard Home �Ľ���Ǽ�**��SY �� uBlock Origin ��ȫ������ԭ���ڽ� AGH ����Ϣ�ܹ���
+  - ���� sticky ���� `header`��Ʒ�� + ���� `nav-tabs`��+ `page-title` ҳ������� + `row` / `col-12` / `col-6` ��Ƭդ���� AGH �� `Dashboard` �ṹһ�¡�
+  - ������Ϊ AGH ���壺**�Ǳ��� / ������? / ����? / �����뱸��**������������� 12 ������ҳ��
+  - �������ֱ�Ӷ��� AGH `client/src/components/App/index.css`��ǳɫ `--bgcolor:#f5f7fb`��`--mcolor:#495057`��`--border-color:rgba(0,40,100,.12)`����ɫ `--bgcolor:#131313`��`--card-bgcolor:#1c1c1c`��`--mcolor:#e6e6e6`��
+  - ͳ�ƿ�ǿ��ɫ���� AGH `StatsCard.css`��`--stats-card--queries:#5eba00` / `--ads:#f67247` / `--threats:#d58500` / `--adult:#a870b2`��
+  - ĥɰ������`header` ����������ʹ�� `backdrop-filter: blur() saturate()`�����ṩ `@supports not` ��������ǳɫ����ͬ�����䡣
+- **�����㶪ʧ**��176 ��Ԫ�� id��166 �� `data-act`��12 ��ҳ�桢5 ���ӱ�ǩ��6 ���������ͱ�ǩȫ��ԭ�������������Ų�����������ҳ����⡣���� `tests/verify_ui_assets.py` �Ի����嵥������ԡ�
+
+### ���ܣ������޸���忨��
+- **����**������ʽ�� `backdrop-filter` ʩ���� `.card` / `.metric` / `.btn` / ����� / ��ǩҳ�� 15 ��ѡ�����ϣ�ҳ�������ٶ��Ԫ�ظ��Կ���һ�㱳��ģ�����ٵ���ȫ�� SVG `feTurbulence` ���㣨ÿ֡���㣩���� Android WebView �б�Ȼ������
+- **�޸�**��
+  - `backdrop-filter` ȫҳ**ֻ���� `.header` �� `.dropdown-menu` ����**��ʵ������ģ����Ԫ�ش� 200+ ���� 3 ������
+  - ɾ�� `feTurbulence` ���㣬���� `body::before` �ľ�̬ `radial-gradient` ���Ϊ�����ṩ��ģ����ɫ��
+  - �Ƴ�ȫҳ `animation` ����������ֻ������ `transform` / `opacity` / `background-color` / `border-color`��
+  - ��������ʹ�� `overflow-x:auto`����������˵��õ�����խ����Ϊ���У�����չ��ʱ���ӿ���Խ�绻�㣬360dp С��Ҳ�޺��������
+- ����Լ���ѹ̻�Ϊ�Զ���������`tests/run_module_checks.sh` �� J ���ܾ��κΰ� `backdrop-filter` �·š����������� `feTurbulence` / `animation` �ĸĶ���
+- **���ʵ�⣨Redmi sky2 / Android 13 / WebView 111 / 1080��2460@60Hz��ÿ�� 3 ��ȡ��λ����**��
+
+  | ָ�� | ����� | ����� (v1) | �ز����ܿر��� |
+  |------|--------|-------------|---------------|
+  | ����֡ռ�� | **3.68 %** | 100 % | 100 % |
+  | P50 / P90 / P99 ֡��ʱ | **19 / 22 / 31 ms** | 150 / 200 / 200 ms | 250 / 400 / 750 ms |
+  | �� Vsync �� | **0.40 %** | 90.85 % | 99.47 % |
+  | ������������Ⱦ֡�� | **1262** | 284 | 190 |
+
+  ���С��ز����ܿر��塹�� `tests/make_heavy_variant.py` �ӵ�ǰ������ɣ�DOM ��ҳ����ȫ��ͬ��ֻ�Ѳ���ģ���̻�ȫҳ ���� ���� P50 �� 19 ms ���� 250 ms��**13��**�����Ӷ��ų�����������ҵ�������������ͣ�ȷ�Ͽ��ٸ������ `backdrop-filter` ����ȫҳ���� `feTurbulence` ���㡣����ԭʼ����� `tests/perf_results.txt`��
+
+### ��������
+- �������أ�DNS/hosts �ں����� + MITM ͸������ + �������������
+- �������ء�������������ڵ���������ű���չ���ġ�֪ͨ���ˡ�����ֿⶩ�Ĺ�����
+- �����񣨾�������̨����ͬһ Wi-Fi �����ֻ�/������������ɹ�����
+- ��־���棺�����ֱ�Ӳ鿴/��� dns��mitm��proxy���ں˵�������־��
+- ģ�����߸��£������ KernelSU/Magisk ��ֱ�Ӷ�ȡ GitHub Release ���¡�
+- DNS ������������Ϊ׼ȷֵ��ȥ�ز��۳�����������
+
+### �޸�
+- **�޸� CRLF ���е��µİ�װ/����ʧ��**���ֿ���ȫ���ı��ļ����� shell �ű�����װ�� `update-binary` / `updater-script`���������嵥��ͳһ�淶��Ϊ LF�������� `.gitattributes` �̻� `eol=lf`�������� Android �� mksh / toybox sh �ϳ����﷨����
+- **�޸���塸����֪ͨ�ؼ��ʡ�ʧЧ**���������˽ű������ڵ������� `add-keyword`���Ѹ���Ϊ `keyword-add`��
+- **�޸� `ctl.sh scripts` ָ�򲻴��ڵĽű�**��`scripts` ������ԭ�Ȼ�ȥִ�в����ڵ� `scripts/scripts.sh`��������ȷ������ `scripts_ext.sh`��
+- **�޸���װ�������� `util_functions.sh` ����ֱ��ʧ��**��`update-binary` �ְ� Magisk �� KernelSU ˳��̽�⣬���߶�ȱʧʱ�Զ�����Ϊ�԰�����װ������ѹ��Ȩ�ޡ�ִ�� `customize.sh`����ص� `modules_update`���������� Magisk �Ͱ汾���У�KernelSU �� `MAGISK_VER_CODE` ��Ϊ 25200����
+- **�޸� `engine_test.awk` ȱ����������**��δ��������ʱ���� `fatal`����Ϊ����ɶ�����
+- **�޸���������޷�����**����������ǰ�� `/.../` �Ķ����һ���������ֵ�����������ƥ����Զʧ�ܣ����ڲ������������ʱ���ض������
+- **�޸������η��б�����Ϊģʽ����**������ `$important`��`$script,image` ���У���ģʽ������ȷʶ��Ϊ��Ч���򣬲�����Ⱦģʽ����
+- **�޸������б�����ΪԪ�����ع���**������ `$$$%%%` �Ĵ�����в��ٱ����� HTML ���˹���ͳһ������Чͳ�ơ�
+- **�޸��������ֻ����������**��`engine test` ��ͬʱ���� `host/path` ������ URL�������·���������� URL ģʽ����
+- **�޸���������� `$dnsrewrite` �����޷�����**����д�����������������ȼ�ͨ��������ֵ��
+- **�޸�������ϲ���������������**����������ֵ���ͳ�Ʋ��г������ڸ�������Ԫ�����ء��ű�ע�롢CSS ע��ȹ���ͬʱ�޸� cosmetic ��������̳еĲ�һ����`sub.example.com` ��ǰ©�̳� `example.com##` ���򣩣���֧�� `~` ȡ����ʵ��ͨ�䣨`example.*`����
+- **�޸���������� `$badfilter` ������Ϊ 0**��`$badfilter` ��¼�ڱ���׶μ����޳������ɹرս׶ε���������ش����������
+- **�޸� hosts ͳ��Ϊ�ա�dnsmasq �������������󡢻�������δ������Чͳ��**�����⡣
+- **�޸����﷨�ֲ�ͳ��ʧ��**�������η�����ǰ��Ϊ 0���� `$` �Ĺ���ȫ������ adblock�����ְ��ɱ�ʶ�﷨�������ࡣ
+- **�޸������˵�������������������**��`nav-tabs` ԭ������ `overflow-x:auto`����Ѿ��Զ�λ��������������õ���խ����Ϊ���ԣ����ָ�Ϊ���в��ֲ���չ��ʱ���ӿ���Խ�绻�㡣
+- **�޸�խ���������**��360dp С���µ�����ų�������������ְ� 520px / 400px �����ϵ��ս�������ֺţ���֤���з��¡�
+- **�޸��ƶ�����ʽ����ʧЧ**��`.dropdown-menu` ��խ�� `min-width` ����ԭ�������ڻ�������֮ǰ����ͬ���ȼ��ĺ��������򸲸ǣ��ֵ�������������֮��
+
+### �Ż�
+- ���� �� ���෢�� �� hosts ���� �� DNS ���򵼳�ȫ��·����װ�أ��������� fork��20000 �������ģ����Ȼ���١�
+- �ϸ��� gawk ר�����ԣ�`gensub` / `asort` / `PROCINFO` / `IGNORECASE` �ȣ����� gawk / mawk / busybox awk / toybox awk ����Ϊһ�¡�
+- �����������ȥ�أ��ظ��������ɸ��֣��ݵȣ���
+- ֤����ģ��汾�Ÿ�Ϊ����ģ�� `module.prop` ��̬��ȡ�������汾Ư�ơ�
+
+### ����
+- ��������Լ��׼���`tests/run_tests.sh`��7 �� 92 ��������˵�����֤��`tests/run_e2e.sh`��81 ���ģ�鼶��̬У���׼���`tests/run_module_checks.sh`��10 �� 319 ���
+- **����ʲ��ع�**��`tests/verify_ui_assets.py` + `tests/ui_baseline.json`������ 176 ��Ԫ�� id��166 �� `data-act`��12 ��ҳ�桢9 �� `data-*` �� 65 �� JS ��������ȶԻ��ߣ���ǿ��У�����ܻ�����`backdrop-filter` ���������� `feTurbulence`���� `animation`��`position:fixed` �������ޣ���
+- **jsdom ����ʱУ��**��`tests/ui_runtime_check.js`��������ʵ DOM ��ִ�����ȫ������ JS��ģ���������ϡ���������ҳ���������ͬ�����հ״��رա�12 ����ǩ��ת���ӱ�ǩ�л��������л���������������ʱ�쳣��
+- **Chromium ���ֶ���**��`tests/ui_screenshot.js`������ 360 / 412 / 768 / 1280 �����ӿ��¶��������˵���ʵ�ɼ���δ������ `overflow` ���С����в������ڲ˵��ڡ��޺��������ͬʱͳ��ʵ�����ñ���ģ����Ԫ��������������ս�ͼ��
+- ����ű� `package.sh`��Ԥ�� �� ��� �� ZIP �ڻض�У�� �� SHA256������徲̬Ԥ�� `ui-preview.html`��
+- **���ȫ������**��Redmi sky2 / Android 13 / KernelSU v3.3.0����`run_tests.sh all` **92/92**��`run_e2e.sh` **81/81**��`run_module_checks.sh all` **230/230**��ȫ��ͨ����20000 ���������������Ϻ�ʱ **3s**������ 25s����
+- **������ܶԱȹ���**��`tests/perf_compare.py` + `tests/perf_serve.sh`������ `dumpsys gfxinfo` �ɼ�֡��ʱ��λ������֡ռ���밴֡����һ���ĳ�ʱ�ʣ��ȵ�ҳ����ȫ������ reset ���ų���������֡���̶����ƴ�����ʱ����֤���汾���븺��һ�£�ÿ�� 3 ��ȡ��λ����������Ⱦ���̽����쳣̬ʱ�Զ����ԡ�
+- **�����׼��� Android �������޸�**��������ܱ�¶�� 4 ����ʵȱ�ݣ���
+  - `run_e2e.sh` �� `run_module_checks.sh` Ӳ���� `/tmp` ��Ϊ��ʱĿ¼���� Android �� `/tmp` ��ֻ���ģ�`mkdir: '/tmp': Read-only file system`������������� 64 ��ʧ�ܣ�������ʹ�� `/data/local/tmp`��
+  - `run_module_checks.sh` B ���� `awk` ���� `-v OUT=/tmp`���������Ŀ¼����д�� `awk: can't open file /tmp/.emit_meta`���ָ��ý���������ʱĿ¼��
+  - C / D / E �ΰ�**Դ����**У�� `META-INF/`��`customize.sh`��`README.md`��`.gitattributes`������װ���豸�� KernelSU/Magisk �������Щ�ļ������� 11 ���󱨣�������Դ������⣬ʶ��"�Ѱ�װ����"ʱ��ӡ `[skip]` ��ֻУ�������ڱر��ļ���
+
+---
+
+## v1.0.0 �� �ڶ��׶� �� ����·�ɲ� / ���Ϳ���̨ / ���ù����� App
+
+> �汾����Ϊ **1.0.0**�����׶ΰ� Shadowrocket ���ס�����·�� + ������ + ���ӹ��������ģ��ײ㣬
+> ������������ɼ��Ϳ���̨��ͬʱ����һ�� LSPosed ʽ����������� App��
+
+### ����������·�ɲ㣨`scripts/route.sh` + `abserver route` + `abserver clash`��
+- **`profile.json` ��ΪΨһ��ʵԴ**���ڵ� / ������ / ���� / DNS / ��������ȫ������һ�� JSON ���塢CLI���ű���дͬһ�ݣ����ٳ���"�����˽ű�����"��
+- **����·�ɱ���**��`abserver route compile` �� profile ����� sing-box ���ã�����˳��ƥ��˳��֧�� `selector` / `urltest` �����顣
+- **��ͻ��˹����﷨��һ��**������ `NormalizeKind`���� Shadowrocket / Clash / Surge ��ͬ��д����`DST-PORT`/`DEST-PORT`��`HOST`/`HOST-SUFFIX`/`HOST-KEYWORD`��`DOMAIN-SET`/`IP-SET`/`RULE-SET`��`URL`/`URL-REGEX`��`SRC-IP`/`SOURCE-IP-CIDR`��`IP6-CIDR`��`GEO-SITE`/`GEO-IP`��`PROCESS`��`FINAL-MATCH` �ȣ�ͳһ���ڲ��淶���͡�**�����޵�һ����ʵ������ bug**��`DST-PORT` ԭ�ȱ���Ϊ"δ֪��������"������������ֻ��һ�� warn��
+- **�ں˰汾����**��sing-box ���汾�﷨�ϴ����أ���������Ŀ���ں˰汾��`-sb-version`���� `-kernel` �Զ����汾����֧��� DNS ������д����`default_domain_resolver`����վ `sniff`��fakeip ���䡢`download_detour`��`urltest.interval` ���͵Ȳ��졣�������ں� 1.11.15 �� 1.14.3 ˫�汾 `check` + `run` ʵ��ͨ����
+- **�������߻�**��16 �� `.srs`��sing-box binary ��ʽ����ģ���������߸����߾�����ٺ����š�
+- **���򼯾���ʵ�⻻Ĭ��**��`abserver route mirrors -probe` ʵ�ⷢ��ԭ��Ĭ�ϵ� `cdn.jsdelivr.net` �ڹ���**ֱ�ӳ�ʱ**������Ĭ�����ò����ã����Ѹ�Ϊ `testingcf.jsdelivr.net`��0.30 s����
+- **�������**��`abserver route test -domain -port -process -protocol -v` �����г��ж����������ղ��ԣ�`route lint` ��������죻`route explain` ���͵�������
+- **DNS ������ʵ����**��`abserver route dnsprobe`������д DNS ���ģ����ⲿ DNS �⣩��֧�� UDP / DoT��2 �ֽڳ���ǰ׺��/ DoH��RFC 8484 wire format��������̽�Ⲣ�������������ʱ��
+- **Clash API �ͻ���**��`abserver clash`����`status` / `conn` / `traffic` / `proxies` / `delay` / `select` / `mode` / `logs` / `close`��������������б����������١��������л���ǿ�ƹر����ӡ���־����
+- **�ڵ㵼��**��`route import` ֧�� vmess / vless / trojan / ss / ssr / hysteria2 / tuic �������ӡ�Clash YAML��base64 ���ġ�
+
+### ���������ù����� App
+- ģ���ڴ�� `app/SYManager.apk`��Լ 53 KB����װ��ʱ�Զ���װ�����棬���õ�ͬ LSPosed ���ù�����������ͼ�� / ��ݴ���һ����ͣ����פ֪ͨ��ʾ������������������ WebView ֱ����塢��ȫ���߲�������
+- `scripts/installapp.sh` ͳһ��װ�߼���װ��ʱ / ��尴ť / ���������������ã��������ĸ�ʵ��ӣ�SELinux ������ `chcon u:object_r:apk_data_file:s0`�����û����� `--user 0`��`pm install` ʧ���˳�����Ϊ 0 ��ƥ�� `Success`��`install-create/-write/-commit` �Ựʽ���ס�
+- ���� `launch` �����`am start` �� `monkey` �� ��ʾ����ͼ��������������`status` ����������� APK �� SHA-256 �������Ժ˶ԡ�
+- ������������ù����� App��ҳ����װ / ���� / �� / ж�� / ǿ����װ / ״̬ˢ�¡�
+
+### ��������� UI �� ���Ϳ���̨
+- **��Ϣ�ܹ�����**��21 ��ҳ���ս� 5 ���������飨���� / ����·��? / ����? / ����? / ����?�������� 9 ������ҳ�档
+- **����ҳ��**������������ʵʱ���� canvas ���� + �������� + ģʽ�ֶοؼ�������������ڵ㣨�۵��� + ɸѡ/���� + �������٣���ʵʱ���ӣ����ӱ� + ɸѡ + ǿ�ƹرգ��������������ͳ�� + ������� + ������� + ����� + ׷�ӹ��� + ���򼯣���DNS ���ѯ���������� + ������ʵ���� + �������б� + ԭʼ JSON�����ں���־���ն˴� + ����/���� + ����ץȡ�����ں������ã��ں���Ϣ + `profile.json` ���߱༭ + ���������գ������ù����� App��ϵͳ����־��ϵͳ״̬ + �Լ� + ������־����
+- **ȫ���������**����ɫ���ȣ�ǳɫΪ���ǲ㣩��`--bgcolor:#0b0f14` / `--mcolor:#e6edf3` / `--accent:#58a6ff` / `--green:#3fb950` / `--lat0..--lat4` �ӳ�ɫ�ס�
+- **�����������**���ֶοؼ� `.seg`��canvas ���� `.spark`���ڵ��� `.nrow`���ӳٻձ� `.lat.p0~p4`�����ӱ� `.ctbl`���ն���־�� `.term`�������� `.rrow`���������� `.wgrid`��������� `.diag`���۵��� `.foldbox`��
+- **������Լ���ֲ���**��`backdrop-filter` ��ֻ���������� `.header` �� `.dropdown-menu`��ʵ������ģ��Ԫ�� 3 �������� `feTurbulence`��ȫҳ�� `animation`��`position:fixed` 3 ����
+- ����ʲ���ģ��318 ��Ԫ�� id / 225 �� `data-act` / 225 �� action ������ / 131 �� JS ���� / 21 ��ҳ�棬�㶪ʧ��
+
+### �����������ű��Ž�
+- `abserver serve` ���� `/api/route`�������͸����POST JSON `{"args":[��]}` �� `a1,a2,��` ��ѯ��������`/api/clash`��Clash API ����������̬��Դע�� `window.__SY_TOKEN__`����Ȩ���� `X-Auth-Token` �� `?token=`��
+- ���ͬʱ֧�� **KernelSU `ksu.exec`** �� **HTTP �ű���** �������л�����ȡ��������һ��������ͨ��ͬһ�� UI �߼���
+- `route.sh` ���� `status-json` / `rulesets` / `reload` / `summary` / `set` / `add-node` / `add-rule` / `dnsprobe` �����`set-profile` ������ JSON �Ϸ���У�飨�� `route summary` ���� `lint`����Ϊ������ error ʱ������˳��������̡�
+- `common.sh` ����ȫ�� `b64dec` / `b64enc`��ԭ��ֻ�� `proxynode.sh` �ڲ����壬`route.sh` ����ȴ�ò�������
+
+### �޸������ֱ�¶����ʵȱ�ݣ�
+- **`installapp.sh` ���﷨����**��`case` ģʽ `*Events injected*` ��δת��ո�POSIX sh ���ģʽ���������ֱ�ӱ��﷨����`syntax error near unexpected token`������ �÷�֧�� `launch` ʱ��Ȼ�������Ѹ�Ϊ `*Events\ injected*`��
+- **����ҳ�������ںˡ�������Ϊ `-`**��`loadHome()` ֻȡ�� `ctl.sh status`����δ���ش��������������� 8 ������������״̬ / ��ǰ�ڵ� / �ϴ� / ���� / ���� / ���� / �ӳ� / ϵͳ��ȫ�����á����ѹ��� `loadRouteStatus / loadRouteSummary / loadRouteLive / loadRouteCurrent`��
+- **��Ӣ�����İ�**����ģʽ rule����������ʾ������ `modeLabel()` ͳһΪ��������� / ȫ�ִ��� / ȫ��ֱ������
+- **��塸ǩ��ָ�ơ���Ϊ `-`**����Ϊ��APK SHA-256������ `installapp.sh` �������� APK ժҪ��`sha256sum` �� `busybox` �� `toybox` �������ˣ���
+- **`selfcheck.sh` ��������ַ�**�������� `selfcheck.sh all` ʱ�����ʽĬ�Ϸ�֧���ֲ��� `case "${1:-diagnose}"` �ַ���`diagnose|all|check` / `heal` / `usage`����
+
+### ���ԣ����֣�
+- `run_module_checks.sh all`��**331/331 ͨ��**��ԭ 319 �� + �������ԣ���
+- `run_panel_api.sh`��**29/29 ͨ��**���� `abserver serve`������Ȩ����̬ע�롢route ȫ�˵㡢����� POST��set-profile��compile��clash��exec����
+- `run_tests.sh all`��**92/92**���� 20000 ��������룩��
+- `run_e2e.sh`��**81/81**��
+- `run_kernel_compat.sh`��**10/10**�����ں� 1.11.15 + 1.14.3 ˫�汾 `check` + `run` + ���߹��򼯣���
+- `run_route_e2e.sh`��**9/9**����������֤���ֹ������� + Clash API �������л�����
+- `verify_ui_assets.py`��318 id / 225 action / 131 �����㶪ʧ�����ܻ���ȫ�̡�
+- `ui_runtime_check.js`��**32/32**������ `modeLabel` ӳ���롸`loadHome` �ѹ��ش����������������ع���ԣ���
+- `ui_shot_panel.js`����ʵ Chromium �� 412��900��@2x������ҳ��Ⱦ������岢��ͼ 13 �ţ�ע�� KernelSU �����ݣ������� JS ����
+- ���Խű������޸���`labels()` �� `case` ��������ͬʱ���� `case "$1" in` �� `case "${1:-status}" in`��`actions` ��������ȡ����ͬʱɨ�� `var actions={��}` ����� `Object.assign(actions,{��})` ��չ�飻`runScript` ������ȡ��Ϊֻ�������ڲ�����������Ԫ���Ǳ���ʱ��Ϊ"�޷���̬�ж�"����������POSIX ���� `[[` �����ս�Ϊ��`[[` �������հ� / `!` / `"`�������ٰ� `[[:space:]]` ����Ϊ bash ר���﷨�����Ҫ�ض��Դ� AGH �����ƻ��������Ƽ���
+
+===== config/sy.conf =====
+# ============================================================
+#  ������ء��ں���ǿ�� �� ������
+# ============================================================
+
+# ---- �ܿ��� ----
+DNS_ENABLE=1
+MITM_ENABLE=0
+SPLASH_ENABLE=1
+NOTIFY_ENABLE=1
+PANEL_ENABLE=1
+
+# ---- DNS �� ----
+DNS_UPSTREAM=1.1.1.1
+DNS_UPSTREAM_ENC=https://dns.alidns.com/dns-query
+DNS_AUTO_UPDATE=1
+DNS_UPDATE_INTERVAL=24
+
+# ---- MITM �� ----
+MITM_PORT=8443
+MITM_HTTP_PORT=8080
+# ��ЧӦ��(���ŷָ�����)������=ȫ��(�ų�root)
+MITM_APPS=
+
+# ---- ��� ----
+PANEL_PORT=8848
+
+# ---- ���� DNS �ӹ� (DNS ҳ) ----
+DNSSRV_ENABLE=0
+
+# ---- ������� (�������ҳ) ----
+PROXY_PORT=2080
+PROXY_ENABLE=0
+# �����ں� (����=�Զ�̽�� bin/ �� sing-box/xray)
+PROXY_CORE=
+# �� IP й¶�ܿ���
+PROXY_LEAK=0
+# ���������Զ����¼��(Сʱ)
+PROXY_SUB_INTERVAL=24
+
+# ---- ���������� (ǿ�����أ����ȼ����ڰ�����) ----
+BLACKLIST_ENABLE=1
+
+# ---- �ű���չ ----
+SCRIPT_UPDATE_INTERVAL=24
+
+# ============================================================
+#  �ںϹ������� (AdGuard Home �� uBlock Origin)
+#  ����������ռ�ʹ��Ĭ��ֵ���޸ĺ������±������(��塸�������� �� ���±��롹)
+# ============================================================
+# ����ʽ����: �Ӻ�·��/ģʽ�Ĺ���(�� ||cdn.x.com/ads/banner.js)����ȡ������
+# ���� hosts ���ء�1=����(Ĭ��)��0=��ʹ�ô���������
+ENGINE_HEURISTIC=1
+# �������ϸ�ģʽ: 0=���� $client/$ctag ����(Ĭ�ϣ����ݵ�������)
+#                 1=���������ͻ��˱�ǩƥ�����ʱ�ù������Ч
+ENGINE_STRICT_SCOPE=0
+# �����ͻ��˱�ʶ����Ӧ�����е� $client=xxx (���ŷָ�������)
+ENGINE_CLIENT=
+# ������ǩ�飬��Ӧ�����е� $ctag=xxx (���ŷָ�������)
+ENGINE_CTAG=
+# ���� hosts ʱΪÿ��������������д�������ǰ׺(���ŷָ�)��������ֻд������
+HOSTS_EXTRA=www
+
+# ---- ���ù���� (SY-Rules) ----
+RULES_REPO=vip-svip/SY-Rules
+RULES_BRANCH=main
+RULES_MIRROR=
+
+===== config/privacy_targets.txt =====
+# SY-Fusion ��˽����Ŀ��Ӧ���嵥
+# �����г��İ����������е�ǰ̨ / �� LSPosed ����ʱ��
+# ͨ�� leakguard.sh ��֪ͨ�����ս����ڲ��ԣ�DNS/IP/VPN/�ڵ��й¶����
+# ÿ��һ��������# ��ͷΪע�͡��ɱ���塸��˽��й¶��ҳֱ�ӱ༭��
+com.tencent.mm
+com.tencent.mobileqq
+com.taobao.taobao
+com.jingdong.app.mall
+com.sina.weibo
+
+===== config/hooks.conf =====
+# SY-Fusion ���� App Hook ��ϵͳ����
+# �ṹ: ÿ��һ�� <tag> <className>#<methodName>
+# �������� LSPosed �� xposed_scope �޶����˱�Ϊ App ��������ʽ���ӱ�����ʵ˵����
+# �����/ά���ߺ˶ԣ�App ����ʱ�� SyHookManager.builtin() Ϊ׼��
+#
+# tag          target
+activity      android.app.Activity#onCreate
+netif         java.net.NetworkInterface#getNetworkInterfaces
+location      android.location.LocationManager#getLastKnownLocation
+deviceid      android.telephony.TelephonyManager#getDeviceId
+subscriber    android.telephony.TelephonyManager#getSubscriberId
+mac           android.net.wifi.WifiInfo#getMacAddress
+webview       android.webkit.WebView#loadUrl
+
+===== config/lists.conf =====
+# ============================================================
+#  ������б� (���� AdGuard Home �������б�)
+#  ÿ�и�ʽ: ����|URL|����(1/0)|����
+#  ģ�鲻�����κι���ȫ�����·���������ġ�
+#  ������塸DNS �� ���ˡ�������/����/ͣ��/���¡�
+# ============================================================
+
+===== config/sources.conf =====
+# ============================================================
+#  ������Դ  ��ʽ: ����|owner/repo
+#  ģ�鲻�����κ����ع���ȫ�������вֿⶩ�ġ�
+#  ������塸DNS��ҳѡ��������һ������ǰ��Ч�Ϊ sy.conf �� RULES_REPO����
+# ============================================================
+SY �ٷ������|vip-svip/SY-Rules
+
+===== config/user_rules.txt =====
+# ============================================================
+#  �Զ�����˹��� (My filters)  �� ���� AdGuard / uBlock Origin �﷨
+#  ʾ��:
+#    ||ads.example.com^          ���ظ�������������
+#    example.com                 ����������(������)
+#    @@||good.example.com^       ��������
+#    /banner\d+/                 ��������
+#    ||track.com^$dnsrewrite=0.0.0.0   ������д
+#    ||bad.com^$important        ��Ҫ����(��������ͨ����)
+#    ||bad.com^$badfilter        �ر�ͬ������
+#  ע������ ! # ; ��ͷ
+# ============================================================
+
+===== config/whitelist.conf =====
+# ============================================================
+#  ���ܰ����� �� ��������(���ȼ����ں�����)
+#  һ������һ�У�֧�ֺ�׺ƥ��(example.com ���� a.example.com)
+#  ģ�鲻�����κ��������붩�Ĺ���ֿ���ڴ��Զ��塣
+# ============================================================
+
+===== config/blacklist.conf =====
+# ============================================================
+#  ǿ����������������(���ȼ����ڰ�����)
+#  һ������һ�У�֧�ֺ�׺ƥ��(example.com ���� a.example.com)
+#  ģ�鲻�����κ��������붩�Ĺ���ֿ���ڴ��Զ��塣
+# ============================================================
+
