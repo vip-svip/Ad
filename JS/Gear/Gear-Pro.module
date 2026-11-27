@@ -1,17 +1,18 @@
-#!name=Gear 浏览器 Pro
+﻿#!name=Gear 浏览器 Pro
 
 #!desc=Gear 浏览器 (com.gear.app) 7.5.1 订阅解锁 — 拦截 RevenueCat subscriber 响应注入 Gear Pro entitlements，需安装并信任模块 CA
 
-#!homepage=https://yfamilys.com
+#!homepage=https://github.com/vip-svip/Ad/tree/main/JS/Gear
 
-#!author=gear-lab
+#!author=vip-svip
 
 #!icon=https://raw.githubusercontent.com/deezertidal/private/main/icons/gear.png
 
 [Script]
 
-GearPro=type=http-response,pattern=^https?:\/\/api\.revenuecat\.com\/v1\/(subscribers|receipts|customers\/subscribers)\/.*,requires-body=1,script-path=https://raw.githubusercontent.com/EXAMPLE-REPO/GearCrack/main/GearCrack.js
+GearPro=type=http-response,pattern=^https?:\/\/api\.revenuecat\.com\/v1\/(subscribers|receipts|customers\/subscribers)\/.*,requires-body=1,script-path=https://raw.githubusercontent.com/vip-svip/Ad/main/JS/Gear/GearCrack.js
 
 [MITM]
 
 hostname = %APPEND% api.revenuecat.com
+
