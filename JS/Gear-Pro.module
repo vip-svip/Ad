@@ -1,6 +1,6 @@
 #!name=Gear 浏览器 Pro
 
-#!desc=Gear 浏览器 (com.gear.app) 订阅解锁 — 拦截 RevenueCat subscriber/entitlement mapping 响应注入 Gear Pro entitlements，需安装并信任模块 CA
+#!desc=Gear 浏览器 (com.gear.app) 订阅解锁 — 拦截 RevenueCat subscriber/mapping 响应注入 Gear Pro entitlements，需信任模块 CA；脚本走 jsDelivr 镜像，规避 raw.githubusercontent SSL 问题
 
 #!homepage=https://github.com/vip-svip/Ad/tree/main/JS
 
@@ -10,7 +10,7 @@
 
 [Script]
 
-GearPro=type=http-response,pattern=^https?:\/\/api\.revenuecat\.com\/v1\/(subscribers|receipts|customers\/subscribers|product_entitlement_mapping)\/.*,requires-body=1,script-path=https://raw.githubusercontent.com/vip-svip/Ad/main/JS/GearCrack.js
+GearPro=type=http-response,pattern=^https?:\/\/api\.revenuecat\.com\/v1\/(subscribers|receipts|customers\/subscribers|product_entitlement_mapping)\/.*,requires-body=1,script-path=https://cdn.jsdelivr.net/gh/vip-svip/Ad@main/JS/GearCrack.js
 
 [MITM]
 
